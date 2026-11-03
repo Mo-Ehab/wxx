@@ -1,0 +1,30 @@
+[project]
+name = "Wxx"
+version = "1.0.0"
+description = "Machine learning framework using Webgpu"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Mo", email = "you@example.com"}
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "numpy>=2.5.0",
+    "wgpu>=0.32.0",
+]
+
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = ["wxx/shaders"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]
