@@ -8,7 +8,6 @@ modules, FFT primitives and a few example models.
 
 ```bash
 pip install https://github.com/Mo-Ehab/wxx
-# wxx itself is used in-place from this repository
 ```
 
 ## Quick start
