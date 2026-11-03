@@ -68,7 +68,7 @@ load("model.npz", model)
 ## Tests
 
 ```bash
-pip install -e "git+https://github.com/Mo-Ehab/wxx[test]" --src .
+pip install -e "wxx[test] @ git+https://github.com/Mo-Ehab/wxx" --src .
 
 pytest
 ```
