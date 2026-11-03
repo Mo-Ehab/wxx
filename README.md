@@ -7,7 +7,7 @@ modules, FFT primitives and a few example models.
 ## Install
 
 ```bash
-pip install https://github.com/Mo-Ehab/wxx
+pip install git+https://github.com/Mo-Ehab/wxx
 ```
 
 ## Quick start
@@ -68,8 +68,9 @@ load("model.npz", model)
 ## Tests
 
 ```bash
-cd webgpu_test
-python run_all.py
+pip install -e "git+https://github.com/Mo-Ehab/wxx[test]" --src .
+
+pytest
 ```
 
 
