@@ -18,19 +18,18 @@ class softmax(Function):
         out.requires_grad = tensor1.requires_grad
         if out.requires_grad and context.MODE == 0:
             out.creator = self
-            self.out = out
+            self.hold_output(out)
 
         return out
 
     def backward(self, grad_output):
-        out = self.out
+        out = self.held_output()
         dot_product = (grad_output * out).sum(axis=self.dim).unsqueeze(self.dim)
 
         grad_A = functional.pointwise(
             out, functional.pointwise(grad_output, dot_product, 1), 2
         )
 
-        self.out = None
         self.dim = None
 
         return grad_A

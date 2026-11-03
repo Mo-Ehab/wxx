@@ -5,7 +5,7 @@ import numpy as np
 from wxx.functional.utils import from_numpy, normal
 
 from .. import autograd
-from wxx.backend.context import MODE
+from ..backend import context
 
 
 
@@ -190,11 +190,9 @@ class Dropout(Module):
         self.p = p
 
     def forward(self, x):
-        if MODE != 0:
+        if context.MODE != 0:
             return x
-        out, seed = functional.dropout(x, self.p)
-        self._seed = seed
-        return out
+        return autograd.Dropout(x).forward(x, self.p)
 
 
 class LayerNorm(Module):
@@ -240,7 +238,7 @@ class BatchNorm(Module):
         self.running_std = Tensor((num_features,), value=1.0)
 
     def forward(self, x):
-        training = MODE == 0
+        training = context.MODE == 0
         return autograd.batchnorm(x, self.weight, self.bias).forward(
             x, self.weight, self.bias, self.running_mean, self.running_std, training
         )

@@ -280,19 +280,18 @@ class sigmoid(Function):
 
         if out.requires_grad and context.MODE == 0:
             out.creator = self
-            self.out = out
+            self.hold_output(out)
         return out
 
     def backward(self, grad_output):
+        out = self.held_output()
         grad_A = (
             functional.pointwise(
-                functional.sigmoidbackwards(self.out), grad_output, 2
+                functional.sigmoidbackwards(out), grad_output, 2
             )
             if self.needs_input_grad[0]
             else None
         )
-
-        self.out = None
 
         return grad_A
 
@@ -392,19 +391,19 @@ class exp(Function):
     def forward(self, tensor1):
         out = functional.exp(tensor1)
         out.requires_grad = tensor1.requires_grad
-        self.out = out
         if out.requires_grad and context.MODE == 0:
             out.creator = self
+            self.hold_output(out)
         return out
 
     def backward(self, grad_output):
+        out = self.held_output()
         if self.needs_input_grad[0]:
-            grad_output = functional.pointwise(grad_output, self.out, 2)
+            grad_output = functional.pointwise(grad_output, out, 2)
             grad_output.requires_grad = True
             grad_A = grad_output
         else:
             grad_A = None
-        self.out = None
         return grad_A
 
 class sqrt(Function):
@@ -413,20 +412,20 @@ class sqrt(Function):
         out.requires_grad = tensor1.requires_grad
 
         if out.requires_grad and context.MODE == 0:
-            self.out = out
+            self.hold_output(out)
             out.creator = self
         return out
 
     def backward(self, grad_output):
+        out = self.held_output()
         if self.needs_input_grad[0]:
             grad_output = functional.pointwise(
-                grad_output, functional.scalarpointwise(self.out, 2, 2), 3
+                grad_output, functional.scalarpointwise(out, 2, 2), 3
             )
             grad_output.requires_grad = True
             grad_A = grad_output
         else:
             grad_A = None
-        self.out = None
         return grad_A
 
 class rsqrt(Function):

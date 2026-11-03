@@ -32,7 +32,7 @@ class Dropout(Function):
         return out
 
     def backward(self, grad_output):
-        if not self.needs_input_grad:
+        if not any(self.needs_input_grad):
             return None
         grad = functional.dropoutdx(grad_output, self.p, self.seed)
 
@@ -59,7 +59,7 @@ class Embedding(Function):
 
     def backward(self, grad_output):
 
-        if not self.needs_input_grad:
+        if not any(self.needs_input_grad):
             return None, None
 
         grad = functional.embeddx(

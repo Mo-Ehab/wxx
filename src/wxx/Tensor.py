@@ -404,6 +404,14 @@ class Tensor:
                 tensor = topo.pop()
                 grad_output = gradients.pop(id(tensor), None)
                 if grad_output is None:
+                    # Nothing flows through this node: it sits behind an op
+                    # whose output does not require grad, or the node does not
+                    # contribute to the loss.  Unlink it so its activations can
+                    # be reclaimed by refcounting instead of waiting for a
+                    # generation-2 GC pass.
+                    if tensor.creator is not None:
+                        tensor.creator.inputs = None
+                        tensor.creator = None
                     continue
 
                 fn = tensor.creator
