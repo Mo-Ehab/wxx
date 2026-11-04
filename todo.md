@@ -14,6 +14,10 @@
 - Added learning-rate schedulers (`LambdaLR`, `StepLR`, `ExponentialLR`,
   `CosineAnnealingLR`, `WarmupCosineLR`).
 - Added GPT-2/ResNet state-dict round-trip tests.
+- GPT-2 applies a cached causal mask; added `GPT2.generate()` for sampling.
+- Added `Tensor.detach()` / `detach_()` (view that cuts the autograd graph).
+- Added `Conv2DTranspose` (forward / dx / dw kernels, autograd, module).
+- Fixed `Conv2D` bias gradients (`sum(axis=(0, 2, 3))` is unsupported; reduce in two steps).
 
 ## Planned
 - Add model zoo / example training scripts for GPT-2 and ResNet.

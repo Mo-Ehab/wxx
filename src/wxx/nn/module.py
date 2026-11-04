@@ -281,6 +281,72 @@ class Conv2D(Module):
         )
 
 
+class Conv2DTranspose(Module):
+    """Transposed 2-D convolution (``ConvTranspose2d``).
+
+    ``W`` has shape ``(in_channels, out_channels, KH, KW)``: every input cell
+    scatters into ``stride``-spaced output windows, so the spatial size grows to
+    ``(H - 1) * stride - 2 * padding + dilation * (K - 1) + output_padding + 1``.
+    """
+
+    def __init__(
+        self, in_channels, out_channels, kernel=3, stride=1,
+        padding=0, output_padding=0, dilation=1, bias=True
+    ):
+        super().__init__()
+        if isinstance(kernel, int):
+            kernel = (kernel, kernel)
+        if isinstance(stride, int):
+            stride = (stride, stride)
+        if isinstance(padding, int):
+            padding = (padding, padding)
+        if isinstance(output_padding, int):
+            output_padding = (output_padding, output_padding)
+        if isinstance(dilation, int):
+            dilation = (dilation, dilation)
+        for axis, name in enumerate(("height", "width")):
+            limit = max(stride[axis], dilation[axis])
+            if not 0 <= output_padding[axis] < limit:
+                raise ValueError(
+                    f"output_padding[{axis}] must be in [0, {limit}) for "
+                    f"{name}, got {output_padding[axis]}"
+                )
+
+        self.kernel = kernel
+        self.stride = stride
+        self.padding = padding
+        self.output_padding = output_padding
+        self.dilation = dilation
+
+        self.W = Parameter(Tensor((in_channels, out_channels, kernel[0], kernel[1])))
+        functional._kaiming_normal_init(self.W, math.prod(kernel) * in_channels)
+        if bias:
+            self.bias = Parameter(Tensor((out_channels,), value=0.0))
+        else:
+            self.bias = None
+
+    def forward(self, x):
+        if self.bias is None:
+            return autograd.Conv2DTranspose(x, self.W).forward(
+                x,
+                self.W,
+                None,
+                self.stride,
+                self.padding,
+                self.output_padding,
+                self.dilation,
+            )
+        return autograd.Conv2DTranspose(x, self.W, self.bias).forward(
+            x,
+            self.W,
+            self.bias,
+            self.stride,
+            self.padding,
+            self.output_padding,
+            self.dilation,
+        )
+
+
 class MaxPool2d(Module):
     def __init__(self, kernel, stride=None, padding=0):
         super().__init__()
@@ -409,7 +475,7 @@ class GELU(Module):
         super().__init__()
 
     def forward(self, x):
-        return functional.gelu(x)
+        return x.gelu()
 
 
 # ---- auxiliary classes (shared with hyena.py) ----

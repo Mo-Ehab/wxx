@@ -20,6 +20,24 @@ def test_gpt2_forward_backward():
     assert len(grads) > 0
 
 
+def test_gpt2_all_parameters_receive_grad():
+    """Every parameter must be reachable from the loss.
+
+    Regression test: ``GELU`` used to call the raw ``functional.gelu``, which
+    returns a tensor with ``requires_grad=False``.  That silently cut the graph
+    before the first MLP linear layer (and the second LayerNorm), so those
+    weights never trained.
+    """
+    V = 32
+    m = GPT2(V, d_model=16, n_heads=2, n_layers=1, max_len=8, dropout=0.0)
+    ids = np.random.default_rng(2).integers(0, V, size=(2, 6)).astype(np.uint32)
+
+    m(from_np_u32(ids)).sum().backward()
+
+    missing = [name for name, p in m.named_parameters() if p.grad is None]
+    assert not missing, f"parameters without gradients: {missing}"
+
+
 def test_gpt2_shape_error():
     V = 16
     m = GPT2(V, d_model=8, n_heads=2, n_layers=1, max_len=4)
@@ -111,6 +129,7 @@ def test_gpt2_generate_restores_mode():
 
 TESTS = [
     ("gpt2_forward_backward", test_gpt2_forward_backward),
+    ("gpt2_all_parameters_receive_grad", test_gpt2_all_parameters_receive_grad),
     ("gpt2_shape_error", test_gpt2_shape_error),
     ("gpt2_state_dict_roundtrip", test_gpt2_state_dict_roundtrip),
     ("gpt2_is_causal", test_gpt2_is_causal),

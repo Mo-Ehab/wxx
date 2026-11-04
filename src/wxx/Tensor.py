@@ -366,6 +366,36 @@ class Tensor:
     # ------------------------------------------------------------------
     # Autograd entry point
     # ------------------------------------------------------------------
+    def detach(self):
+        """Return a view that shares storage but is cut off from autograd.
+
+        The result has ``requires_grad=False`` and no ``creator`` or ``grad``,
+        so gradients never flow back into ``self`` through it.  Storage is
+        shared (like a normal view), therefore in-place writes to either
+        tensor are visible in the other.
+        """
+        if self.buffer is None:
+            raise RuntimeError("cannot detach a tensor whose buffer was released")
+        out = Tensor(
+            shape=self.shape,
+            buffer=self.buffer,
+            stride=self.stride,
+            offset=self.offset,
+            dtype=self.type,
+        )
+        # Keep the source (and through it the root buffer owner) alive: views
+        # defer destruction to their base, so a detached view must not outlive
+        # its storage owner.
+        out._base = self
+        return out
+
+    def detach_(self):
+        """Cut ``self`` out of the autograd graph in place and return it."""
+        self.requires_grad = False
+        self.creator = None
+        self.grad = None
+        return self
+
     def backward(self):
         """Backpropagate from this tensor through its recorded graph."""
         from . import functional

@@ -51,11 +51,81 @@ class Conv2D(Function):
             self.bias = None
             return dx, dw
         if len(grad_output.shape) == 4:
-            db = grad_output.sum(axis=(0, 2, 3))
+            db = grad_output.sum(axis=(2, 3)).sum(axis=0)
         else:
             db = grad_output.sum(axis=0)
         self.bias = None
         return dx, dw, db
+
+class Conv2DTranspose(Function):
+    def forward(
+        self,
+        tensor1,
+        W,
+        bias=None,
+        stride=(1, 1),
+        padding=(0, 0),
+        output_padding=(0, 0),
+        dilation=(1, 1),
+    ):
+        self.Xshape = tensor1.shape
+        self.wshape = W.shape
+        self.tensor1 = tensor1
+        self.W = W
+        self.bias = bias
+        self.stride = stride
+        self.padding = padding
+        self.output_padding = output_padding
+        self.dilation = dilation
+
+        out = functional.conv2dtranspose(
+            tensor1, W, stride, padding, dilation, output_padding, bias
+        )
+        self.out_shape = out.shape
+        out.requires_grad = any(self.needs_input_grad)
+        if out.requires_grad and context.MODE == 0:
+            out.creator = self
+        return out
+
+    def backward(self, grad_output):
+        dx = (
+            functional.conv2dtranspose_dx(
+                grad_output,
+                self.W,
+                self.stride,
+                self.padding,
+                self.dilation,
+                self.Xshape,
+                self.wshape,
+                self.out_shape,
+            )
+            if self.needs_input_grad[0]
+            else None
+        )
+        dw = (
+            functional.conv2dtranspose_dw(
+                grad_output,
+                self.tensor1,
+                self.stride,
+                self.padding,
+                self.dilation,
+                self.out_shape,
+                self.wshape,
+            )
+            if self.needs_input_grad[1]
+            else None
+        )
+
+        self.W = None
+        self.tensor1 = None
+
+        if self.bias is None:
+            self.bias = None
+            return dx, dw
+        db = grad_output.sum(axis=(2, 3)).sum(axis=0)
+        self.bias = None
+        return dx, dw, db
+
 
 class maxpooling2d(Function):
     def forward(self, tensor1, kernel, stride, padding):

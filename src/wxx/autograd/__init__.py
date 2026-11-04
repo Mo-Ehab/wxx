@@ -1,6 +1,7 @@
 from .function import Function
 from .convolution import (
     Conv2D,
+    Conv2DTranspose,
     adaptive_avgpooling2d,
     avgpooling2d,
     causal_conv1d,
@@ -54,6 +55,7 @@ from .utils import (
 __all__ = [
     "Function",
     "Conv2D",
+    "Conv2DTranspose",
     "adaptive_avgpooling2d",
     "avgpooling2d",
     "causal_conv1d",

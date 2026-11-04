@@ -617,6 +617,283 @@ def conv2ddw(tensor1, X, stride, padding, dilation, Xshape, wshape):
     return out
 
 
+def conv2dtranspose(tensor1, W, stride, padding, dilation, output_padding, bias=None):
+    """Transposed (fractionally strided) 2-D convolution.
+
+    ``W`` has shape ``(C_in, C_out, KH, KW)`` and the output spatial size is
+    ``(H_in - 1) * stride - 2 * padding + dilation * (K - 1) + output_padding + 1``.
+    """
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+    if not W.is_contiguous():
+        W = W.contiguous()
+    if bias is not None:
+        if not bias.is_contiguous():
+            bias = bias.contiguous()
+        hb = 1
+        buf_bias = bias.buffer
+    else:
+        buf_bias = tensor1.buffer
+        hb = 0
+
+    pipeline = gpu_ctx.get_pipeline(
+        "conv2dtranspose", shaders["layers/conv2dtranspose.wgsl"]
+    )
+
+    B, C_in, H_in, W_in = tensor1.shape
+    weight_in_c, C_out, KH, KW = W.shape
+    if weight_in_c != C_in:
+        raise ValueError(
+            f"conv2dtranspose weight expects {C_in} input channels, got {weight_in_c}"
+        )
+    sh, sw = stride
+    ph, pw = padding
+    dh, dw = dilation
+    oph, opw = output_padding
+    if not (0 <= oph < max(sh, dh)) or not (0 <= opw < max(sw, dw)):
+        raise ValueError(
+            f"output_padding {(oph, opw)} must be >= 0 and smaller than "
+            f"max(stride, dilation) {(max(sh, dh), max(sw, dw))}"
+        )
+    H_out = (H_in - 1) * sh - 2 * ph + dh * (KH - 1) + oph + 1
+    W_out = (W_in - 1) * sw - 2 * pw + dw * (KW - 1) + opw + 1
+    if H_out < 1 or W_out < 1:
+        raise ValueError(
+            f"conv2dtranspose produces an empty output ({H_out}, {W_out})"
+        )
+
+    u32_list = (
+        [B, C_in, H_in, W_in]
+        + [C_out, H_out, W_out]
+        + [KH, KW]
+        + [sh, sw]
+        + [ph, pw]
+        + [dh, dw]
+        + [hb]
+    )
+
+    meta_data = struct.pack(f"<{len(u32_list)}I", *u32_list)
+
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=meta_data, usage=wgpu.BufferUsage.STORAGE, label="conv2dtranspose meta"
+    )
+
+    buf_out = buffer_pool.create_buffer(
+        size=B * C_out * H_out * W_out * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+    )
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": tensor1.buffer}},
+            {"binding": 1, "resource": {"buffer": W.buffer}},
+            {"binding": 2, "resource": {"buffer": buf_bias}},
+            {"binding": 3, "resource": {"buffer": buf_out}},
+            {"binding": 4, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    _dispatch_tiled_rows(pass_enc, B * H_out * W_out, C_out)
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    return Tensor(
+        buffer=buf_out,
+        shape=(B, C_out, H_out, W_out),
+        requires_grad=tensor1.requires_grad,
+    )
+
+
+def conv2dtranspose_dx(tensor1, W, stride, padding, dilation, Xshape, wshape, out_shape):
+    """Gradient of :func:`conv2dtranspose` with respect to its input."""
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+    if not W.is_contiguous():
+        W = W.contiguous()
+
+    pipeline = gpu_ctx.get_pipeline(
+        "conv2dtranspose_dx", shaders["layers/conv2dtranspose_dx.wgsl"]
+    )
+
+    B, C_in, H_in, W_in = Xshape
+    _, C_out, KH, KW = wshape
+    _, _, H_out, W_out = out_shape
+    sh, sw = stride
+    ph, pw = padding
+    dh, dw = dilation
+
+    u32_list = (
+        [B, C_in, H_in, W_in]
+        + [C_out, H_out, W_out]
+        + [KH, KW]
+        + [sh, sw]
+        + [ph, pw]
+        + [dh, dw]
+        + [0]
+    )
+
+    meta_data = struct.pack(f"<{len(u32_list)}I", *u32_list)
+
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=meta_data, usage=wgpu.BufferUsage.STORAGE, label="conv2dtranspose dx meta"
+    )
+
+    buf_out = buffer_pool.create_buffer(
+        size=B * C_in * H_in * W_in * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+    )
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": tensor1.buffer}},
+            {"binding": 1, "resource": {"buffer": W.buffer}},
+            {"binding": 2, "resource": {"buffer": buf_out}},
+            {"binding": 3, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    _dispatch_tiled_rows(pass_enc, B * H_in * W_in, C_in)
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    return Tensor(
+        buffer=buf_out,
+        shape=(B, C_in, H_in, W_in),
+        requires_grad=tensor1.requires_grad,
+    )
+
+
+def conv2dtranspose_dw(tensor1, X, stride, padding, dilation, out_shape, wshape):
+    """Gradient of :func:`conv2dtranspose` with respect to its weight."""
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+    if not X.is_contiguous():
+        X = X.contiguous()
+
+    pipeline = gpu_ctx.get_pipeline(
+        "conv2dtranspose_dw", shaders["layers/conv2dtranspose_dw.wgsl"]
+    )
+
+    B, C_in, H_in, W_in = X.shape
+    _, C_out, KH, KW = wshape
+    _, _, H_out, W_out = out_shape
+    sh, sw = stride
+    ph, pw = padding
+    dh, dw = dilation
+
+    filter_size = C_in * KH * KW
+    total_weights = C_out * filter_size
+    total_spatial = B * H_out * W_out
+
+    filter_workgroups = (filter_size + 15) // 16
+    filter_workgroups_z = (
+        filter_workgroups + MAX_WORKGROUPS_PER_DIMENSION - 1
+    ) // MAX_WORKGROUPS_PER_DIMENSION
+    max_split_count = max(1, MAX_WORKGROUPS_PER_DIMENSION // filter_workgroups_z)
+    split_size = 2048
+    split_count = (total_spatial + split_size - 1) // split_size
+    if split_count > max_split_count:
+        split_count = max_split_count
+        split_size = (total_spatial + split_count - 1) // split_count
+
+    partial_size = split_count * total_weights * 4
+    if (
+        split_count > 1
+        and partial_size > device.limits["max-storage-buffer-binding-size"]
+    ):
+        split_count = 1
+        split_size = total_spatial
+
+    u32_list = (
+        [B, C_in, H_in, W_in]
+        + [C_out, H_out, W_out]
+        + [KH, KW]
+        + [sh, sw]
+        + [ph, pw]
+        + [dh, dw]
+        + [0, split_count, split_size]
+    )
+
+    meta_data = struct.pack(f"<{len(u32_list)}I", *u32_list)
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=meta_data, usage=wgpu.BufferUsage.STORAGE, label="conv2dtranspose dw meta"
+    )
+
+    buf_out = buffer_pool.create_buffer(
+        size=total_weights * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+    )
+
+    buf_work = buf_out
+    if split_count > 1:
+        buf_work = buffer_pool.create_buffer(
+            size=partial_size,
+            usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+        )
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": tensor1.buffer}},
+            {"binding": 1, "resource": {"buffer": X.buffer}},
+            {"binding": 2, "resource": {"buffer": buf_work}},
+            {"binding": 3, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    dispatch_x = min(filter_workgroups, MAX_WORKGROUPS_PER_DIMENSION)
+    dispatch_y = (C_out + 15) // 16
+    dispatch_z = split_count * filter_workgroups_z
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    pass_enc.dispatch_workgroups(dispatch_x, dispatch_y, dispatch_z)
+
+    if split_count > 1:
+        reduce_pipeline = gpu_ctx.get_pipeline(
+            "conv2ddw_reduce", shaders["layers/conv2ddw_reduce.wgsl"]
+        )
+        reduce_meta = buffer_pool.create_buffer_with_data(
+            data=struct.pack("<2I", total_weights, split_count),
+            usage=wgpu.BufferUsage.STORAGE,
+            label="conv2dtranspose dw reduce meta",
+        )
+        reduce_bind_group = device.create_bind_group(
+            layout=reduce_pipeline.get_bind_group_layout(0),
+            entries=[
+                {"binding": 0, "resource": {"buffer": buf_work}},
+                {"binding": 1, "resource": {"buffer": buf_out}},
+                {"binding": 2, "resource": {"buffer": reduce_meta}},
+            ],
+        )
+        pass_enc.set_pipeline(reduce_pipeline)
+        pass_enc.set_bind_group(0, reduce_bind_group)
+        _dispatch_1d(pass_enc, total_weights)
+        cmd_buf.keep_alive(reduce_meta)
+        cmd_buf.defer_destroy(buf_work)
+
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    return Tensor(
+        buffer=buf_out,
+        shape=(C_in, C_out, KH, KW),
+        requires_grad=tensor1.requires_grad,
+    )
+
+
 def causal_conv1d(tensor1, weight, bias):
     """Depthwise causal 1-D convolution over ``(B, D, L)`` inputs.
 
