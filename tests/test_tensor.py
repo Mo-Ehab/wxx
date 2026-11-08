@@ -38,6 +38,29 @@ def test_reshape_permute_contiguous():
     assert_close(to_np(p), np.transpose(to_np(a), (2, 0, 1)))
 
 
+def test_permute_tuple_argument_backward():
+    """``permute`` accepts a single tuple of axes, and backward inverts it."""
+    a = rng(9).standard_normal((2, 3, 4)).astype(np.float32)
+    for axes in ((2, 0, 1), (-1, 0, 1)):
+        x = from_np(a)
+        x.requires_grad = True
+
+        p = x.permute(axes)
+        normalized = tuple(axis % a.ndim for axis in axes)
+        assert p.shape == [a.shape[axis] for axis in normalized]
+        assert_close(to_np(p), np.transpose(a, normalized))
+
+        w = rng(10).standard_normal(p.shape).astype(np.float32)
+        (p * from_np(w)).sum().backward()
+
+        inv = [0] * a.ndim
+        for i, axis in enumerate(normalized):
+            inv[axis] = i
+        assert_close(
+            to_np(x.grad), np.transpose(w, inv), msg=f"axes={axes}"
+        )
+
+
 def test_slicing_narrow_chunk():
     a = from_np(rng(4).standard_normal((4, 6)))
     s = a[:, 2:5]
@@ -89,6 +112,7 @@ TESTS = [
     ("from_numpy_roundtrip", test_from_numpy_roundtrip),
     ("arithmetic_broadcast", test_arithmetic_broadcast),
     ("reshape_permute_contiguous", test_reshape_permute_contiguous),
+    ("permute_tuple_argument_backward", test_permute_tuple_argument_backward),
     ("slicing_narrow_chunk", test_slicing_narrow_chunk),
     ("advanced_indexing", test_advanced_indexing),
     ("complex_tensor_roundtrip", test_complex_tensor_roundtrip),

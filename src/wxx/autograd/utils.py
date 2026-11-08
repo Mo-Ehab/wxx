@@ -179,6 +179,16 @@ class flatten(Function):
 
 class permute(Function):
     def forward(self, tensor1, axes):
+        # Accept both ``permute(0, 2, 1)`` and ``permute((0, 2, 1))`` and store
+        # the flattened, normalised axes so backward can invert them.
+        if len(axes) == 1 and isinstance(axes[0], (tuple, list)):
+            axes = tuple(axes[0])
+        else:
+            axes = tuple(axes)
+        axes = validation.normalize_dims(
+            axes, len(tensor1.shape), name="axes", allow_duplicates=False
+        )
+
         self.needs_input_grad = [tensor1.requires_grad]
 
         out = functional.permute(tensor1, *axes)
@@ -260,6 +270,70 @@ class narrow(Function):
             )
 
         self.tensor1 = None
+        return dX
+
+
+class diagonal(Function):
+    """Differentiable :func:`functional.diagonal` (a strided view)."""
+
+    def forward(self, tensor1, offset, dim1, dim2):
+        out = functional.diagonal(tensor1, offset, dim1, dim2)
+        out.requires_grad = tensor1.requires_grad
+
+        if out.requires_grad and context.MODE == 0:
+            self.tensor1 = tensor1
+            self.offset = offset
+            self.dim1 = dim1
+            self.dim2 = dim2
+            out.creator = self
+        return out
+
+    def backward(self, grad_output):
+        if not self.needs_input_grad[0]:
+            return None
+
+        # Scatter through a diagonal view of fresh zeros: one dispatch, no
+        # host round-trip, and independent of the input's layout.
+        dX = Tensor(
+            self.tensor1.shape,
+            value=0,
+            requires_grad=False,
+            dtype=self.tensor1.type,
+        )
+        functional.assign(
+            functional.diagonal(dX, self.offset, self.dim1, self.dim2), grad_output
+        )
+        self.tensor1 = None
+        return dX
+
+
+class unfold(Function):
+    """Differentiable :func:`functional.unfold` (a sliding-window view)."""
+
+    def forward(self, tensor1, dimension, size, step):
+        out = functional.unfold(tensor1, dimension, size, step)
+        out.requires_grad = tensor1.requires_grad
+
+        if out.requires_grad and context.MODE == 0:
+            self.input_shape = tuple(tensor1.shape)
+            self.dimension = dimension
+            self.size = size
+            self.step = step
+            out.creator = self
+        return out
+
+    def backward(self, grad_output):
+        if not self.needs_input_grad[0]:
+            return None
+
+        dX = functional.unfolddx(
+            grad_output,
+            self.input_shape,
+            self.dimension,
+            self.size,
+            self.step,
+        )
+        self.input_shape = None
         return dX
 
 

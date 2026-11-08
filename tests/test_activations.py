@@ -17,6 +17,9 @@ def test_relu_gelu_sigmoid():
 def test_sin_exp_log():
     a = from_np(rng(1).standard_normal((4, 6)) * 0.5)
     assert_close(to_np(F.sin(a)), np.sin(to_np(a)), atol=1e-6)
+    assert_close(to_np(F.cos(a)), np.cos(to_np(a)), atol=1e-6)
+    assert_close(to_np(a.sin()), np.sin(to_np(a)), atol=1e-6)
+    assert_close(to_np(a.cos()), np.cos(to_np(a)), atol=1e-6)
     assert_close(to_np(F.exp(a)), np.exp(to_np(a)), atol=1e-5)
     b = from_np(np.abs(rng(2).standard_normal((4, 6))) + 0.5)
     assert_close(to_np(F.log(b)), np.log(to_np(b)), atol=1e-5)

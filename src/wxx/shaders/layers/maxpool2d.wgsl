@@ -11,6 +11,10 @@ struct PoolMeta {
     stride_w: u32,
     pad_h: u32,
     pad_w: u32,
+    write_indices: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
 @group(0) @binding(0) var<storage, read> X: array<f32>;              // (B, C, Hin, Win)
@@ -42,7 +46,7 @@ fn main(
         let w_start = i32(w_out * metamatrix.stride_w) - i32(metamatrix.pad_w);
 
         var max_val: f32 = -1e38;
-        var max_idx: u32 = 0u;
+        var max_idx: u32 = 0xFFFFFFFFu;
 
         for (var kh = 0u; kh < metamatrix.kernel_h; kh++) {
             let ih = h_start + i32(kh);
@@ -63,7 +67,9 @@ fn main(
         }
 
         Y[idx] = max_val;
-        indices[idx] = max_idx;
+        if (metamatrix.write_indices != 0u) {
+            indices[idx] = max_idx;
+        }
 
         idx += stride;
     }

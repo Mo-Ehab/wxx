@@ -123,6 +123,44 @@ def test_exp_sqrt_gradcheck():
         assert rel < 5e-2, (i, j, analytic[i, j], numeric, rel)
 
 
+def _gradcheck_unary_fixed(fn, arr, seed):
+    """Finite-difference check of a unary op on a caller-supplied array."""
+    a = from_np(np.asarray(arr, dtype=np.float32))
+    a.requires_grad = True
+    w = from_np(rng(seed).standard_normal(a.shape).astype(np.float32))
+
+    (fn(a) * w).sum().backward()
+    analytic = a.grad.numpy().copy()
+
+    base = a.numpy().copy()
+    eps = 1e-3
+    for flat in [0, 2, 4]:
+        i, j = divmod(flat, base.shape[1])
+        arr_p = base.copy(); arr_p[i, j] += eps
+        F.assign(a, from_np(arr_p))
+        lp = (fn(a) * w).sum().item()
+        arr_m = base.copy(); arr_m[i, j] -= eps
+        F.assign(a, from_np(arr_m))
+        lm = (fn(a) * w).sum().item()
+        F.assign(a, from_np(base))
+        numeric = (lp - lm) / (2 * eps)
+        rel = abs(analytic[i, j] - numeric) / max(1e-4, abs(analytic[i, j]) + abs(numeric))
+        assert rel < 5e-2, (i, j, analytic[i, j], numeric, rel)
+
+
+def test_pow_cos_reverse_gradcheck():
+    """``cos``, ``pow`` and the reflected scalar overloads."""
+    arr = np.array(
+        [[-2.0, -0.5, 0.5, 2.0], [0.25, 1.5, 3.0, 4.0]], dtype=np.float32
+    )
+    _gradcheck_unary_fixed(lambda t: t.cos(), arr, 20)
+    _gradcheck_unary_fixed(lambda t: t.pow(3), arr, 22)
+    _gradcheck_unary_fixed(lambda t: t ** -1, arr, 24)
+    _gradcheck_unary_fixed(lambda t: 2 ** t, arr, 26)
+    _gradcheck_unary_fixed(lambda t: 2.5 ** t, arr, 28)
+    _gradcheck_unary_fixed(lambda t: 2 / t, arr, 30)
+
+
 def test_slice_backward_scatter():
     """narrow/getitem backward fills zeros and scatters in one kernel."""
     # narrow along a middle dim, including a non-zero start
@@ -157,6 +195,7 @@ TESTS = [
     ("linear_gradcheck", test_linear_gradcheck),
     ("activation_gradcheck", test_activation_gradcheck),
     ("exp_sqrt_gradcheck", test_exp_sqrt_gradcheck),
+    ("pow_cos_reverse_gradcheck", test_pow_cos_reverse_gradcheck),
     ("slice_backward_scatter", test_slice_backward_scatter),
 ]
 

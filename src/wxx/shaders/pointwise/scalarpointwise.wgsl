@@ -1,6 +1,6 @@
 struct ScalarOpMeta {
     numel: u32,       // Total elements in tensor X
-    op_type: u32,     // 0 = Add, 1 = Sub, 2 = Mul, 3 = pow
+    op_type: u32,     // 0 = Add, 1 = Sub, 2 = Mul, 3 = Pow, 4 = Div
     scalar_val: f32,  // The scalar operand 'c'
     reverse: u32,     // 0 = X op c (e.g. X - c), 1 = c op X (e.g. c - X)
 };
@@ -31,14 +31,41 @@ fn main(
                 res = x_val + c;
             }
             case 1u: { // SUB: X - c or c - X
-                res = x_val - c;
-
+                if (metamatrix.reverse == 1u) {
+                    res = c - x_val;
+                } else {
+                    res = x_val - c;
+                }
             }
             case 2u: { // MUL: X * c
                 res = x_val * c;
             }
-            case 3u: { // MUL: X * c
-                res = pow(x_val, c);
+            case 3u: { // POW: X ^ c or c ^ X
+                if (metamatrix.reverse == 1u) {
+                    // c ^ X; the host rejects non-positive c.
+                    res = pow(c, x_val);
+                } else if (x_val < 0.0) {
+                    // WGSL pow is undefined for a negative base.  The real
+                    // value only exists for integer exponents: odd exponents
+                    // keep the sign, even ones drop it.  Fractional
+                    // exponents return NaN, matching NumPy/PyTorch.
+                    if (c == trunc(c)) {
+                        let odd = fract(abs(c) * 0.5) > 0.25;
+                        let magnitude = pow(-x_val, c);
+                        res = select(magnitude, -magnitude, odd);
+                    } else {
+                        res = bitcast<f32>(0x7fc00000u);
+                    }
+                } else {
+                    res = pow(x_val, c);
+                }
+            }
+            case 4u: { // DIV: X / c or c / X
+                if (metamatrix.reverse == 1u) {
+                    res = c / x_val;
+                } else {
+                    res = x_val / c;
+                }
             }
             default: {
                 res = x_val;

@@ -128,6 +128,165 @@ def permute(tensor1, *axes):
     return out
 
 
+def diagonal(tensor1, offset=0, dim1=0, dim2=1):
+    """Return a view of the diagonal of the plane spanned by ``dim1``/``dim2``.
+
+    ``offset > 0`` picks a diagonal above the main one, ``offset < 0`` below.
+    The two source dimensions are replaced by a single trailing diagonal
+    dimension, exactly like ``torch.diagonal(input, offset, dim1, dim2)``:
+    the result shape is the remaining dimensions followed by ``(length,)``.
+    The view aliases ``tensor1`` (writing through it updates the source), and
+    offsets that miss the plane yield an empty trailing dimension.
+    """
+    rank = len(tensor1.shape)
+    if rank < 2:
+        raise ValueError(
+            f"diagonal expects at least 2 dimensions, got shape {tuple(tensor1.shape)}"
+        )
+    if not isinstance(offset, int) or isinstance(offset, bool):
+        raise TypeError(f"offset must be an int, got {type(offset).__name__}")
+    dim1 = validation.normalize_dim(dim1, rank, name="dim1")
+    dim2 = validation.normalize_dim(dim2, rank, name="dim2")
+    if dim1 == dim2:
+        raise ValueError(f"dim1 and dim2 must differ, got {dim1} and {dim2}")
+
+    rows, cols = tensor1.shape[dim1], tensor1.shape[dim2]
+    if offset >= 0:
+        start_rows, start_cols = 0, offset
+        length = min(rows, cols - offset)
+    else:
+        start_rows, start_cols = -offset, 0
+        length = min(rows + offset, cols)
+    if length <= 0:
+        # Keep the empty view inside the storage: its offset is never read.
+        start_rows = start_cols = length = 0
+
+    new_shape = [
+        size for axis, size in enumerate(tensor1.shape) if axis not in (dim1, dim2)
+    ]
+    new_shape.append(length)
+    new_stride = [
+        step for axis, step in enumerate(tensor1.stride) if axis not in (dim1, dim2)
+    ]
+    new_stride.append(tensor1.stride[dim1] + tensor1.stride[dim2])
+    new_offset = (
+        tensor1.offset
+        + start_rows * tensor1.stride[dim1]
+        + start_cols * tensor1.stride[dim2]
+    )
+
+    out = Tensor(
+        shape=tuple(new_shape),
+        buffer=tensor1.buffer,
+        stride=tuple(new_stride),
+        offset=new_offset,
+        requires_grad=tensor1.requires_grad,
+        dtype=tensor1.type,
+    )
+    out._base = tensor1
+    return out
+
+
+def unfold(tensor1, dimension, size, step=1):
+    """Return a sliding-window view of ``tensor1`` (``torch.Tensor.unfold``).
+
+    ``dimension`` is replaced by ``(length - size) // step + 1`` windows and a
+    trailing dimension of extent ``size`` is appended.  The result shares
+    storage with ``tensor1`` (no copy) and is differentiable.
+    """
+    rank = len(tensor1.shape)
+    dim = validation.normalize_dim(dimension, rank, name="dimension")
+    if isinstance(size, bool) or not isinstance(size, int):
+        raise TypeError(f"size must be an int, got {type(size).__name__}")
+    if isinstance(step, bool) or not isinstance(step, int):
+        raise TypeError(f"step must be an int, got {type(step).__name__}")
+    if size < 1:
+        raise ValueError(f"size must be positive, got {size}")
+    if step < 1:
+        raise ValueError(f"step must be positive, got {step}")
+    if rank + 1 > validation.MAX_RANK:
+        raise ValueError(
+            f"unfold would produce rank {rank + 1}, but the maximum supported "
+            f"rank is {validation.MAX_RANK}"
+        )
+
+    length = tensor1.shape[dim]
+    if size > length:
+        raise ValueError(
+            f"size {size} is larger than dimension {dim} of size {length}"
+        )
+    windows = (length - size) // step + 1
+
+    new_shape = list(tensor1.shape)
+    new_shape[dim] = windows
+    new_shape.append(size)
+    new_stride = list(tensor1.stride)
+    new_stride[dim] *= step
+    new_stride.append(tensor1.stride[dim])
+
+    out = Tensor(
+        shape=tuple(new_shape),
+        buffer=tensor1.buffer,
+        stride=tuple(new_stride),
+        offset=tensor1.offset,
+        requires_grad=tensor1.requires_grad,
+        dtype=tensor1.type,
+    )
+    out._base = tensor1
+    return out
+
+
+def unfolddx(grad, input_shape, dimension, size, step=1):
+    """Backward of :func:`unfold`: scatter-add gradients of overlapping windows."""
+    dim = validation.normalize_dim(dimension, len(input_shape), name="dimension")
+    if grad.type != "f32":
+        raise TypeError(f"unfold expects f32 grad, got {grad.type!r}")
+    if not grad.is_contiguous():
+        grad = grad.contiguous()
+
+    prefix = 1
+    for axis in range(dim):
+        prefix *= input_shape[axis]
+    suffix = 1
+    for axis in range(dim + 1, len(input_shape)):
+        suffix *= input_shape[axis]
+    length = input_shape[dim]
+    windows = (length - size) // step + 1
+    total_in = prefix * length * suffix
+
+    pipeline = gpu_ctx.get_pipeline("unfolddx", shaders["helpers/unfolddx.wgsl"])
+
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=struct.pack("<8I", prefix, length, suffix, windows, size, step, 0, 0),
+        usage=wgpu.BufferUsage.UNIFORM,
+        label="unfold dx meta",
+    )
+
+    buf_out = buffer_pool.create_buffer(
+        size=total_in * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+    )
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": grad.buffer}},
+            {"binding": 1, "resource": {"buffer": buf_out}},
+            {"binding": 2, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    _dispatch_1d(pass_enc, total_in)
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    return Tensor(tuple(input_shape), buffer=buf_out)
+
+
 def reshape(tensor1, new_shape):
     """Return a tensor with the same elements laid out as ``new_shape``."""
     total = validation.numel(tensor1.shape)

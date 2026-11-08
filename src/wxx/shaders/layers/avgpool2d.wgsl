@@ -11,11 +11,16 @@ struct PoolMeta {
     stride_w: u32,
     pad_h: u32,
     pad_w: u32,
+    write_indices: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 
-@group(0) @binding(0) var<storage, read> X: array<f32>;       // (B, C, Hin, Win)
-@group(0) @binding(1) var<storage, read_write> Y: array<f32>; // (B, C, Hout, Wout)
-@group(0) @binding(2) var<uniform> metamatrix: PoolMeta;
+@group(0) @binding(0) var<storage, read> X: array<f32>;              // (B, C, Hin, Win)
+@group(0) @binding(1) var<storage, read_write> Y: array<f32>;        // (B, C, Hout, Wout)
+@group(0) @binding(2) var<storage, read_write> indices: array<u32>;  // (B, C, Hout, Wout)
+@group(0) @binding(3) var<uniform> metamatrix: PoolMeta;
 
 const WORKGROUP_SIZE: u32 = 256u;
 
@@ -41,6 +46,8 @@ fn main(
 
         var sum: f32 = 0.0;
         var count: f32 = 0.0;
+        var max_val: f32 = -1e38;
+        var max_idx: u32 = 0xFFFFFFFFu;
 
         for (var kh = 0u; kh < metamatrix.kernel_h; kh++) {
             let ih = h_start + i32(kh);
@@ -49,14 +56,24 @@ fn main(
                 for (var kw = 0u; kw < metamatrix.kernel_w; kw++) {
                     let iw = w_start + i32(kw);
                     if (iw >= 0 && u32(iw) < metamatrix.in_w) {
-                        sum += X[ih_offset + u32(iw)];
+                        let in_idx = ih_offset + u32(iw);
+                        let x_val = X[in_idx];
+                        sum += x_val;
                         count += 1.0;
+                        if (x_val > max_val) {
+                            max_val = x_val;
+                            max_idx = in_idx;
+                        }
                     }
                 }
             }
         }
 
         Y[idx] = select(0.0, sum / count, count > 0.0);
+        if (metamatrix.write_indices != 0u) {
+            indices[idx] = max_idx;
+        }
+
         idx += stride;
     }
 }

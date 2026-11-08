@@ -98,7 +98,11 @@ def pointwise(tensor1, tensor2, op):
     )
 
 
-def scalarpointwise(tensor1, value, op):
+def scalarpointwise(tensor1, value, op, reverse=0):
+    """Apply ``X op value`` (or ``value op X`` when ``reverse`` is set).
+
+    ``op`` is ``0`` add, ``1`` sub, ``2`` mul, ``3`` pow, ``4`` div.
+    """
     if tensor1.type != "f32":
         raise TypeError(f"scalarpointwise expects f32 input, got {tensor1.type!r}")
     if not tensor1.is_contiguous():
@@ -110,7 +114,7 @@ def scalarpointwise(tensor1, value, op):
 
     numel = int(math.prod(tensor1.shape))
 
-    u32_list = [numel, int(op), value, 0]
+    u32_list = [numel, int(op), float(value), int(bool(reverse))]
     meta_data = struct.pack("IIfI", *u32_list)
 
     meta_buf = buffer_pool.create_buffer_with_data(
@@ -230,6 +234,13 @@ def _pointwise(tensor1, tensor2, op):
 
     if not tensor2.is_contiguous():
         tensor2 = tensor2.contiguous()
+
+    # ``A`` is written in place, so ``B`` must not share its buffer: WebGPU
+    # forbids binding one buffer as both ``read_write`` and ``read`` in a
+    # dispatch.  This happens when autograd accumulates a gradient into
+    # itself, e.g. ``x + x`` or two branches of a reused tensor.
+    if tensor1.buffer is tensor2.buffer:
+        tensor2 = scalarpointwise(tensor2, 0.0, 0)
 
     pipeline = gpu_ctx.get_pipeline("_pointwise", shaders["pointwise/_pointwise.wgsl"])
 

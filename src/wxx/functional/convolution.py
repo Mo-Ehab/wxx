@@ -21,7 +21,49 @@ WORKGROUP_SIZE = 256
 MAX_WORKGROUPS_PER_DIMENSION = 65535
 
 
-def maxpool2d(tensor1, kernel, stride, padding):
+def _as_pool1d_int(value, name):
+    """Normalise a 1-D pooling argument (``int`` or 1-tuple) to an int."""
+    if isinstance(value, bool):
+        raise TypeError(f"{name} must be an int, got {type(value).__name__}")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, (tuple, list)):
+        if len(value) != 1:
+            raise ValueError(f"{name} must be an int or a 1-tuple, got {value!r}")
+        if isinstance(value[0], bool) or not isinstance(value[0], int):
+            raise TypeError(
+                f"{name}[0] must be an int, got {type(value[0]).__name__}"
+            )
+        return value[0]
+    raise TypeError(f"{name} must be an int or a 1-tuple, got {value!r}")
+
+
+def _check_pool_input(tensor1, rank, name):
+    if len(tensor1.shape) != rank:
+        expected = "(B, C, L)" if rank == 3 else "(B, C, H, W)"
+        raise ValueError(f"{name} expects {expected}, got {tensor1.shape}")
+    if tensor1.type != "f32":
+        raise TypeError(f"{name} expects f32 input, got {tensor1.type!r}")
+
+
+def _check_pool_out(shape):
+    if any(size < 1 for size in shape):
+        raise ValueError(f"pooling produces an empty output {tuple(shape)}")
+
+
+def _make_indices_buffer(out_bytes):
+    return buffer_pool.create_buffer(
+        size=out_bytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
+    )
+
+
+def maxpool2d(tensor1, kernel, stride, padding, return_indices=False):
+    """Max pooling over ``(B, C, H, W)``.
+
+    With ``return_indices`` the result is ``(out, indices)`` where ``indices``
+    holds the flat input index of the maximum of every window (``u32``).
+    """
+    _check_pool_input(tensor1, 4, "maxpool2d")
     if not tensor1.is_contiguous():
         tensor1 = tensor1.contiguous()
 
@@ -32,12 +74,16 @@ def maxpool2d(tensor1, kernel, stride, padding):
     sh, sw = stride
     ph, pw = padding
 
-    H_out = (H_in + 2 * ph * (KH - 1) - 1) // sh + 1
-    W_out = (W_in + 2 * pw * (KW - 1) - 1) // sw + 1
+    H_out = (H_in + 2 * ph - KH) // sh + 1
+    W_out = (W_in + 2 * pw - KW) // sw + 1
+    _check_pool_out((H_out, W_out))
 
-    u32_list = [B, C, H_in, W_in, H_out, W_out, KH, KW, sh, sw, ph, pw]
+    u32_list = [
+        B, C, H_in, W_in, H_out, W_out, KH, KW, sh, sw, ph, pw,
+        1 if return_indices else 0, 0, 0, 0,
+    ]
 
-    meta_data = struct.pack("<IIIIIIIIIIII", *u32_list)
+    meta_data = struct.pack("<16I", *u32_list)
     meta_buf = buffer_pool.create_buffer_with_data(
         data=meta_data, usage=wgpu.BufferUsage.UNIFORM, label="Maxpool2d meta"
     )
@@ -47,17 +93,16 @@ def maxpool2d(tensor1, kernel, stride, padding):
     buf_out = buffer_pool.create_buffer(
         size=out_bytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
     )
-
-    buf_indicies = buffer_pool.create_buffer(
-        size=out_bytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
-    )
+    # When indices are not requested the output buffer doubles as a dummy
+    # binding: the kernel skips every write because the flag is zero.
+    buf_indices = _make_indices_buffer(out_bytes) if return_indices else buf_out
 
     bind_group = device.create_bind_group(
         layout=pipeline.get_bind_group_layout(0),
         entries=[
             {"binding": 0, "resource": {"buffer": tensor1.buffer}},
             {"binding": 1, "resource": {"buffer": buf_out}},
-            {"binding": 2, "resource": {"buffer": buf_indicies}},
+            {"binding": 2, "resource": {"buffer": buf_indices}},
             {"binding": 3, "resource": {"buffer": meta_buf}},
         ],
     )
@@ -75,12 +120,19 @@ def maxpool2d(tensor1, kernel, stride, padding):
     cmd_buf.keep_alive(meta_buf)
 
     out = Tensor((B, C, H_out, W_out), buffer=buf_out)
-    indicies = Tensor((B, C, H_out, W_out), buffer=buf_indicies)
+    if return_indices:
+        return out, Tensor((B, C, H_out, W_out), buffer=buf_indices, dtype="u32")
+    return out
 
-    return out, indicies
 
+def avgpool2d(tensor1, kernel, stride, padding, return_indices=False):
+    """Average pooling over ``(B, C, H, W)``.
 
-def avgpool2d(tensor1, kernel, stride, padding):
+    Padded cells are excluded from the divisor (``count_include_pad=False``).
+    With ``return_indices`` the result is ``(out, indices)`` where ``indices``
+    holds the flat input index of the maximum value of every window (``u32``).
+    """
+    _check_pool_input(tensor1, 4, "avgpool2d")
     if not tensor1.is_contiguous():
         tensor1 = tensor1.contiguous()
 
@@ -91,12 +143,16 @@ def avgpool2d(tensor1, kernel, stride, padding):
     sh, sw = stride
     ph, pw = padding
 
-    H_out = (H_in + 2 * ph * (KH - 1) - 1) // sh + 1
-    W_out = (W_in + 2 * pw * (KW - 1) - 1) // sw + 1
+    H_out = (H_in + 2 * ph - KH) // sh + 1
+    W_out = (W_in + 2 * pw - KW) // sw + 1
+    _check_pool_out((H_out, W_out))
 
-    u32_list = [B, C, H_in, W_in, H_out, W_out, KH, KW, sh, sw, ph, pw]
+    u32_list = [
+        B, C, H_in, W_in, H_out, W_out, KH, KW, sh, sw, ph, pw,
+        1 if return_indices else 0, 0, 0, 0,
+    ]
 
-    meta_data = struct.pack("<IIIIIIIIIIII", *u32_list)
+    meta_data = struct.pack("<16I", *u32_list)
     meta_buf = buffer_pool.create_buffer_with_data(
         data=meta_data, usage=wgpu.BufferUsage.UNIFORM, label="avgpool2d meta"
     )
@@ -106,13 +162,15 @@ def avgpool2d(tensor1, kernel, stride, padding):
     buf_out = buffer_pool.create_buffer(
         size=out_bytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
     )
+    buf_indices = _make_indices_buffer(out_bytes) if return_indices else buf_out
 
     bind_group = device.create_bind_group(
         layout=pipeline.get_bind_group_layout(0),
         entries=[
             {"binding": 0, "resource": {"buffer": tensor1.buffer}},
             {"binding": 1, "resource": {"buffer": buf_out}},
-            {"binding": 2, "resource": {"buffer": meta_buf}},
+            {"binding": 2, "resource": {"buffer": buf_indices}},
+            {"binding": 3, "resource": {"buffer": meta_buf}},
         ],
     )
 
@@ -129,8 +187,239 @@ def avgpool2d(tensor1, kernel, stride, padding):
     cmd_buf.keep_alive(meta_buf)
 
     out = Tensor((B, C, H_out, W_out), buffer=buf_out)
-
+    if return_indices:
+        return out, Tensor((B, C, H_out, W_out), buffer=buf_indices, dtype="u32")
     return out
+
+
+def avgpool1d(tensor1, kernel, stride, padding, return_indices=False):
+    """Average pooling over ``(B, C, L)``.
+
+    ``kernel``/``stride``/``padding`` accept an int or a 1-tuple.  Padded
+    cells are excluded from the divisor.  With ``return_indices`` the result is
+    ``(out, indices)`` where ``indices`` holds the flat input index of the
+    maximum value of every window (``u32``).
+    """
+    _check_pool_input(tensor1, 3, "avgpool1d")
+    kernel = _as_pool1d_int(kernel, "kernel")
+    stride = _as_pool1d_int(stride, "stride")
+    padding = _as_pool1d_int(padding, "padding")
+    if kernel < 1 or stride < 1 or padding < 0:
+        raise ValueError(
+            f"avgpool1d expects kernel >= 1, stride >= 1, padding >= 0, got "
+            f"kernel={kernel}, stride={stride}, padding={padding}"
+        )
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+
+    pipeline = gpu_ctx.get_pipeline("avgpool1d", shaders["layers/avgpool1d.wgsl"])
+
+    B, C, L_in = tensor1.shape
+    L_out = (L_in + 2 * padding - kernel) // stride + 1
+    _check_pool_out((L_out,))
+
+    meta_data = struct.pack(
+        "<8I",
+        B, C, L_in, L_out, kernel, stride, padding,
+        1 if return_indices else 0,
+    )
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=meta_data, usage=wgpu.BufferUsage.UNIFORM, label="avgpool1d meta"
+    )
+
+    out_bytes = B * C * L_out * 4
+    buf_out = buffer_pool.create_buffer(
+        size=out_bytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
+    )
+    buf_indices = _make_indices_buffer(out_bytes) if return_indices else buf_out
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": tensor1.buffer}},
+            {"binding": 1, "resource": {"buffer": buf_out}},
+            {"binding": 2, "resource": {"buffer": buf_indices}},
+            {"binding": 3, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    _dispatch_1d(pass_enc, B * C * L_out)
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    out = Tensor((B, C, L_out), buffer=buf_out)
+    if return_indices:
+        return out, Tensor((B, C, L_out), buffer=buf_indices, dtype="u32")
+    return out
+
+
+def maxpool1d(tensor1, kernel, stride, padding, return_indices=False):
+    """Max pooling over ``(B, C, L)``.
+
+    ``kernel``/``stride``/``padding`` accept an int or a 1-tuple.  With
+    ``return_indices`` the result is ``(out, indices)`` where ``indices`` holds
+    the flat input index of the maximum of every window (``u32``).
+    """
+    _check_pool_input(tensor1, 3, "maxpool1d")
+    kernel = _as_pool1d_int(kernel, "kernel")
+    stride = _as_pool1d_int(stride, "stride")
+    padding = _as_pool1d_int(padding, "padding")
+    if kernel < 1 or stride < 1 or padding < 0:
+        raise ValueError(
+            f"maxpool1d expects kernel >= 1, stride >= 1, padding >= 0, got "
+            f"kernel={kernel}, stride={stride}, padding={padding}"
+        )
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+
+    pipeline = gpu_ctx.get_pipeline("maxpool1d", shaders["layers/maxpool1d.wgsl"])
+
+    B, C, L_in = tensor1.shape
+    L_out = (L_in + 2 * padding - kernel) // stride + 1
+    _check_pool_out((L_out,))
+
+    meta_data = struct.pack(
+        "<8I",
+        B, C, L_in, L_out, kernel, stride, padding,
+        1 if return_indices else 0,
+    )
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=meta_data, usage=wgpu.BufferUsage.UNIFORM, label="maxpool1d meta"
+    )
+
+    out_bytes = B * C * L_out * 4
+    buf_out = buffer_pool.create_buffer(
+        size=out_bytes, usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC
+    )
+    buf_indices = _make_indices_buffer(out_bytes) if return_indices else buf_out
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": tensor1.buffer}},
+            {"binding": 1, "resource": {"buffer": buf_out}},
+            {"binding": 2, "resource": {"buffer": buf_indices}},
+            {"binding": 3, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    _dispatch_1d(pass_enc, B * C * L_out)
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    out = Tensor((B, C, L_out), buffer=buf_out)
+    if return_indices:
+        return out, Tensor((B, C, L_out), buffer=buf_indices, dtype="u32")
+    return out
+
+
+def maxpool1ddx(grad, tensor1, indices, kernel, stride, padding):
+    """Backward of :func:`maxpool1d` (scatter through ``indices``)."""
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+    if not grad.is_contiguous():
+        grad = grad.contiguous()
+
+    pipeline = gpu_ctx.get_pipeline(
+        "maxpool1ddx", shaders["layers/maxpool1ddx.wgsl"]
+    )
+
+    B, C, L_in = tensor1.shape
+    kernel = _as_pool1d_int(kernel, "kernel")
+    stride = _as_pool1d_int(stride, "stride")
+    padding = _as_pool1d_int(padding, "padding")
+    L_out = (L_in + 2 * padding - kernel) // stride + 1
+    _check_pool_out((L_out,))
+
+    meta_data = struct.pack(
+        "<8I", B, C, L_in, L_out, kernel, stride, padding, 0
+    )
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=meta_data, usage=wgpu.BufferUsage.UNIFORM, label="maxpool1d dx meta"
+    )
+
+    buf_out = buffer_pool.create_buffer(
+        size=B * C * L_in * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+    )
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": grad.buffer}},
+            {"binding": 1, "resource": {"buffer": indices.buffer}},
+            {"binding": 2, "resource": {"buffer": buf_out}},
+            {"binding": 3, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    _dispatch_1d(pass_enc, B * C * L_in)
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    return Tensor((B, C, L_in), buffer=buf_out)
+
+
+def avgpool1ddx(grad, tensor1, kernel, stride, padding):
+    """Backward of :func:`avgpool1d`."""
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+    if not grad.is_contiguous():
+        grad = grad.contiguous()
+
+    pipeline = gpu_ctx.get_pipeline(
+        "avgpool1ddx", shaders["layers/avgpool1ddx.wgsl"]
+    )
+
+    B, C, L_in = tensor1.shape
+    kernel = _as_pool1d_int(kernel, "kernel")
+    stride = _as_pool1d_int(stride, "stride")
+    padding = _as_pool1d_int(padding, "padding")
+    L_out = (L_in + 2 * padding - kernel) // stride + 1
+    _check_pool_out((L_out,))
+
+    meta_data = struct.pack(
+        "<8I", B, C, L_in, L_out, kernel, stride, padding, 0
+    )
+    meta_buf = buffer_pool.create_buffer_with_data(
+        data=meta_data, usage=wgpu.BufferUsage.UNIFORM, label="avgpool1d dx meta"
+    )
+
+    buf_out = buffer_pool.create_buffer(
+        size=B * C * L_in * 4,
+        usage=wgpu.BufferUsage.STORAGE | wgpu.BufferUsage.COPY_SRC,
+    )
+
+    bind_group = device.create_bind_group(
+        layout=pipeline.get_bind_group_layout(0),
+        entries=[
+            {"binding": 0, "resource": {"buffer": grad.buffer}},
+            {"binding": 1, "resource": {"buffer": buf_out}},
+            {"binding": 2, "resource": {"buffer": meta_buf}},
+        ],
+    )
+
+    pass_enc = cmd_buf.begin_compute_pass()
+    pass_enc.set_pipeline(pipeline)
+    pass_enc.set_bind_group(0, bind_group)
+    _dispatch_1d(pass_enc, B * C * L_in)
+    pass_enc.end()
+
+    cmd_buf.keep_alive(meta_buf)
+
+    return Tensor((B, C, L_in), buffer=buf_out)
 
 
 def avgpool2ddx(grad, tensor1, kernel, stride, padding):
@@ -144,8 +433,9 @@ def avgpool2ddx(grad, tensor1, kernel, stride, padding):
     sh, sw = stride
     ph, pw = padding
 
-    H_out = (H_in + 2 * ph * (KH - 1) - 1) // sh + 1
-    W_out = (W_in + 2 * pw * (KW - 1) - 1) // sw + 1
+    H_out = (H_in + 2 * ph - KH) // sh + 1
+    W_out = (W_in + 2 * pw - KW) // sw + 1
+    _check_pool_out((H_out, W_out))
 
     u32_list = [B, C, H_in, W_in, H_out, W_out, KH, KW, sh, sw, ph, pw]
 
@@ -319,8 +609,9 @@ def maxpool2ddx(grad, tensor1, indicies, kernel, stride, padding):
     sh, sw = stride
     ph, pw = padding
 
-    H_out = (H_in + 2 * ph * (KH - 1) - 1) // sh + 1
-    W_out = (W_in + 2 * pw * (KW - 1) - 1) // sw + 1
+    H_out = (H_in + 2 * ph - KH) // sh + 1
+    W_out = (W_in + 2 * pw - KW) // sw + 1
+    _check_pool_out((H_out, W_out))
 
     u32_list = [B, C, H_in, W_in, H_out, W_out, KH, KW, sh, sw, ph, pw]
 

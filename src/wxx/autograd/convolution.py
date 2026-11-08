@@ -128,9 +128,16 @@ class Conv2DTranspose(Function):
 
 
 class maxpooling2d(Function):
-    def forward(self, tensor1, kernel, stride, padding):
+    def forward(self, tensor1, kernel, stride, padding, return_indices=False):
 
-        out, indices = functional.maxpool2d(tensor1, kernel, stride, padding)
+        need_indices = tensor1.requires_grad or return_indices
+        if need_indices:
+            out, indices = functional.maxpool2d(
+                tensor1, kernel, stride, padding, True
+            )
+        else:
+            out = functional.maxpool2d(tensor1, kernel, stride, padding)
+            indices = None
         out.requires_grad = tensor1.requires_grad
 
         if out.requires_grad and context.MODE == 0:
@@ -141,7 +148,7 @@ class maxpooling2d(Function):
             self.stride = stride
             self.padding = padding
             out.creator = self
-        return out
+        return (out, indices) if return_indices else out
 
     def backward(self, grad_output):
         if not self.needs_input_grad[0]:
@@ -161,10 +168,53 @@ class maxpooling2d(Function):
 
         return grad_input
 
-class avgpooling2d(Function):
-    def forward(self, tensor1, kernel, stride, padding):
+class maxpooling1d(Function):
+    def forward(self, tensor1, kernel, stride, padding, return_indices=False):
 
-        out = functional.avgpool2d(tensor1, kernel, stride, padding)
+        need_indices = tensor1.requires_grad or return_indices
+        if need_indices:
+            out, indices = functional.maxpool1d(
+                tensor1, kernel, stride, padding, True
+            )
+        else:
+            out = functional.maxpool1d(tensor1, kernel, stride, padding)
+            indices = None
+        out.requires_grad = tensor1.requires_grad
+
+        if out.requires_grad and context.MODE == 0:
+            self.tensor1 = tensor1
+            self.indices = indices
+            self.kernel = kernel
+            self.stride = stride
+            self.padding = padding
+            out.creator = self
+        return (out, indices) if return_indices else out
+
+    def backward(self, grad_output):
+        if not self.needs_input_grad[0]:
+            return None
+
+        grad_input = functional.maxpool1ddx(
+            grad_output,
+            self.tensor1,
+            self.indices,
+            self.kernel,
+            self.stride,
+            self.padding,
+        )
+
+        self.tensor1 = None
+        self.indices = None
+
+        return grad_input
+
+class avgpooling2d(Function):
+    def forward(self, tensor1, kernel, stride, padding, return_indices=False):
+
+        result = functional.avgpool2d(
+            tensor1, kernel, stride, padding, return_indices
+        )
+        out = result[0] if return_indices else result
         out.requires_grad = tensor1.requires_grad
 
         if out.requires_grad and context.MODE == 0:
@@ -174,7 +224,7 @@ class avgpooling2d(Function):
             self.stride = stride
             self.padding = padding
             out.creator = self
-        return out
+        return result
 
     def backward(self, grad_output):
         if not self.needs_input_grad[0]:
@@ -185,7 +235,35 @@ class avgpooling2d(Function):
         )
 
         self.tensor1 = None
-        self.indices = None
+
+        return grad_input
+
+class avgpooling1d(Function):
+    def forward(self, tensor1, kernel, stride, padding, return_indices=False):
+
+        result = functional.avgpool1d(
+            tensor1, kernel, stride, padding, return_indices
+        )
+        out = result[0] if return_indices else result
+        out.requires_grad = tensor1.requires_grad
+
+        if out.requires_grad and context.MODE == 0:
+            self.tensor1 = tensor1
+            self.kernel = kernel
+            self.stride = stride
+            self.padding = padding
+            out.creator = self
+        return result
+
+    def backward(self, grad_output):
+        if not self.needs_input_grad[0]:
+            return None
+
+        grad_input = functional.avgpool1ddx(
+            grad_output, self.tensor1, self.kernel, self.stride, self.padding
+        )
+
+        self.tensor1 = None
 
         return grad_input
 

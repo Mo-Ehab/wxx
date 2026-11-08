@@ -6,6 +6,8 @@ from ..backend.dispatch import _sum_to_shape
 
 from .function import Function
 
+import math
+
 
 class add(Function):
     def forward(self, tensor1, tensor2):
@@ -165,6 +167,56 @@ class powscaler(Function):
         self.tensor1 = None
         return grad_A
 
+class rpowscaler(Function):
+    """``base ** x`` for a scalar base (``base > 0``)."""
+
+    def forward(self, tensor1, float):
+        out = functional.scalarpointwise(tensor1, float, 3, reverse=1)
+        out.requires_grad = tensor1.requires_grad
+
+        if out.requires_grad and context.MODE == 0:
+            self.float = float
+            self.hold_output(out)
+            out.creator = self
+        return out
+
+    def backward(self, grad_output):
+        grad_A = None
+        if self.needs_input_grad[0]:
+            # d/dx base**x = base**x * ln(base)
+            out = self.held_output()
+            log_base = math.log(self.float)
+            grad_A = functional.pointwise(
+                grad_output,
+                functional.scalarpointwise(out, log_base, 2),
+                2,
+            )
+        return grad_A
+
+class rdivscaler(Function):
+    """``numerator / x`` for a scalar numerator."""
+
+    def forward(self, tensor1, float):
+        out = functional.scalarpointwise(tensor1, float, 4, reverse=1)
+        out.requires_grad = tensor1.requires_grad
+
+        if out.requires_grad and context.MODE == 0:
+            self.float = float
+            self.tensor1 = tensor1
+            out.creator = self
+        return out
+
+    def backward(self, grad_output):
+        grad_A = None
+        if self.needs_input_grad[0]:
+            # d/dx c/x = -c / x^2
+            squared = functional.pointwise(self.tensor1, self.tensor1, 2)
+            grad_A = functional.scalarpointwise(
+                functional.pointwise(grad_output, squared, 3), -self.float, 2
+            )
+        self.tensor1 = None
+        return grad_A
+
 class div(Function):
     def forward(self, tensor1, tensor2):
         out = functional.pointwise(tensor1, tensor2, 3)
@@ -239,6 +291,30 @@ class sin(Function):
         grad_A = (
             functional.pointwise(
                 functional.sinback(self.tensor1), grad_output, 2
+            )
+            if self.needs_input_grad[0]
+            else None
+        )
+
+        self.tensor1 = None
+
+        return grad_A
+
+
+class cos(Function):
+    def forward(self, tensor1):
+        out = functional.cos(tensor1)
+        out.requires_grad = tensor1.requires_grad
+
+        if out.requires_grad and context.MODE == 0:
+            out.creator = self
+            self.tensor1 = tensor1
+        return out
+
+    def backward(self, grad_output):
+        grad_A = (
+            functional.pointwise(
+                functional.cosback(self.tensor1), grad_output, 2
             )
             if self.needs_input_grad[0]
             else None

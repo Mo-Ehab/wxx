@@ -43,6 +43,22 @@ def sinback(tensor1):
     return _unary_op(tensor1, pipeline)
 
 
+def cos(tensor1):
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+    pipeline = gpu_ctx.get_pipeline("cos", shaders["activations/cos.wgsl"])
+
+    return _unary_op(tensor1, pipeline)
+
+
+def cosback(tensor1):
+    if not tensor1.is_contiguous():
+        tensor1 = tensor1.contiguous()
+    pipeline = gpu_ctx.get_pipeline("cosback", shaders["activations/cosback.wgsl"])
+
+    return _unary_op(tensor1, pipeline)
+
+
 def gelu(tensor1):
     if not tensor1.is_contiguous():
         tensor1 = tensor1.contiguous()

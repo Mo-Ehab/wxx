@@ -43,6 +43,24 @@ def cceloss(tensor1, tensor2):
     if B < 1 or K < 1:
         raise ValueError(f"cceloss expects non-empty logits, got {(B, K)}")
 
+    # The kernel indexes Z[row][target] directly: a target outside [0, K) is an
+    # out-of-bounds GPU read (undefined values, not a clean zero). Check on the
+    # host so it fails loudly instead of silently returning garbage. This costs
+    # one small readback of the B ids, so the check is unconditional: it is the
+    # only way the mistake is reported at all, which matters because it is fast
+    # to reproduce (e.g. passing hidden states of width D_MODEL as logits while
+    # the targets are token ids in the full vocabulary range). Targets are
+    # indices, so nothing about them is secret.
+    target_array = tensor2.numpy().reshape(-1)
+    target_max = int(target_array.max())
+    target_min = int(target_array.min())
+    if target_max >= K:
+        raise ValueError(
+            f"cceloss targets must be in [0, {K}), got max target {target_max}"
+        )
+    if target_min < 0:  # unreachable for a u32 buffer; kept for clarity
+        raise ValueError(f"cceloss targets must be non-negative, got {target_min}")
+
     pipeline = gpu_ctx.get_pipeline("cceloss", shaders["loss/cceloss.wgsl"])
 
     loss_buf = buffer_pool.create_buffer(

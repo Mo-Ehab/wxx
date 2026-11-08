@@ -138,6 +138,20 @@ def test_cceloss_shape_checks():
     assert _raises(lambda: functional.cceloss(from_np(rng(18).standard_normal((5,))), targets), ValueError)
 
 
+def test_cceloss_target_out_of_range():
+    logits = from_np(rng(24).standard_normal((2, 4)))
+    # Last legal target is K - 1.
+    functional.cceloss(logits, from_np_u32(np.array([0, 3], dtype=np.uint32)))
+    # A target >= K must be rejected before the kernel reads out of bounds.
+    oob_targets = from_np_u32(np.array([0, 4], dtype=np.uint32))
+    assert _raises(lambda: functional.cceloss(logits, oob_targets), ValueError)
+    # The classic failure: hidden states used as logits (width 256) with token
+    # ids in the full vocabulary range.
+    hidden = from_np(rng(25).standard_normal((2, 256)))
+    token_ids = from_np_u32(np.array([0, 4095], dtype=np.uint32))
+    assert _raises(lambda: functional.cceloss(hidden, token_ids), ValueError)
+
+
 def test_unsqueeze_squeeze_strides():
     a = from_np(rng(19).standard_normal((2, 3, 4)))
     a.requires_grad = True
@@ -180,6 +194,7 @@ TESTS = [
     ("broadcast_shapes", test_broadcast_shapes),
     ("assign_shape_checks", test_assign_shape_checks),
     ("cceloss_shape_checks", test_cceloss_shape_checks),
+    ("cceloss_target_out_of_range", test_cceloss_target_out_of_range),
     ("unsqueeze_squeeze_strides", test_unsqueeze_squeeze_strides),
     ("concat_checks", test_concat_checks),
     ("flatten_errors", test_flatten_errors),

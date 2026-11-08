@@ -347,8 +347,28 @@ class Conv2DTranspose(Module):
         )
 
 
+class MaxPool1d(Module):
+    """Max pooling over ``(B, C, L)``.
+
+    Set ``return_indices=True`` to receive ``(output, indices)``; each index is
+    the flat input position of the window maximum (``u32``).
+    """
+
+    def __init__(self, kernel, stride=None, padding=0, return_indices=False):
+        super().__init__()
+        self.kernel = kernel
+        self.stride = kernel if stride is None else stride
+        self.padding = padding
+        self.return_indices = return_indices
+
+    def forward(self, x):
+        return autograd.maxpooling1d(x).forward(
+            x, self.kernel, self.stride, self.padding, self.return_indices
+        )
+
+
 class MaxPool2d(Module):
-    def __init__(self, kernel, stride=None, padding=0):
+    def __init__(self, kernel, stride=None, padding=0, return_indices=False):
         super().__init__()
         if isinstance(kernel, int):
             kernel = (kernel, kernel)
@@ -361,13 +381,36 @@ class MaxPool2d(Module):
         self.kernel = kernel
         self.stride = stride
         self.padding = padding
+        self.return_indices = return_indices
 
     def forward(self, x):
-        return autograd.maxpooling2d(x).forward(x, self.kernel, self.stride, self.padding)
+        return autograd.maxpooling2d(x).forward(
+            x, self.kernel, self.stride, self.padding, self.return_indices
+        )
+
+
+class AvgPool1d(Module):
+    """Average pooling over ``(B, C, L)``.
+
+    Set ``return_indices=True`` to receive ``(output, indices)``; each index is
+    the flat input position of the window maximum (``u32``).
+    """
+
+    def __init__(self, kernel, stride=None, padding=0, return_indices=False):
+        super().__init__()
+        self.kernel = kernel
+        self.stride = kernel if stride is None else stride
+        self.padding = padding
+        self.return_indices = return_indices
+
+    def forward(self, x):
+        return autograd.avgpooling1d(x).forward(
+            x, self.kernel, self.stride, self.padding, self.return_indices
+        )
 
 
 class AvgPool2d(Module):
-    def __init__(self, kernel, stride=None, padding=0):
+    def __init__(self, kernel, stride=None, padding=0, return_indices=False):
         super().__init__()
         if isinstance(kernel, int):
             kernel = (kernel, kernel)
@@ -380,9 +423,12 @@ class AvgPool2d(Module):
         self.kernel = kernel
         self.stride = stride
         self.padding = padding
+        self.return_indices = return_indices
 
     def forward(self, x):
-        return autograd.avgpooling2d(x).forward(x, self.kernel, self.stride, self.padding)
+        return autograd.avgpooling2d(x).forward(
+            x, self.kernel, self.stride, self.padding, self.return_indices
+        )
 
 
 class AdaptiveAvgPool2d(Module):

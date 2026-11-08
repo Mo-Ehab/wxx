@@ -10,6 +10,8 @@ materialise a contiguous copy instead.
 """
 
 
+import numbers
+
 import numpy as np
 import wgpu
 
@@ -65,6 +67,10 @@ class Tensor:
             if self.type == "c64":
                 self.data = np.zeros(
                     validation.numel(self.shape) * 2, dtype=np.float32
+                ).tobytes()
+            elif self.type == "u32":
+                self.data = np.full(
+                    validation.numel(self.shape), value, dtype=np.uint32
                 ).tobytes()
             else:
                 self.data = np.full(
@@ -281,6 +287,31 @@ class Tensor:
         from wxx import autograd
 
         return autograd.narrow(self).forward(self, dim, start, length)
+
+    def unfold(self, dimension, size, step=1):
+        """Return a sliding-window view along ``dimension``.
+
+        The dimension is replaced by ``(length - size) // step + 1`` windows and
+        a trailing dimension of extent ``size`` is appended, matching
+        ``torch.Tensor.unfold``.  The view shares storage with ``self`` and is
+        differentiable (overlapping windows accumulate their gradients).
+        """
+        from wxx import autograd
+
+        return autograd.unfold(self).forward(self, dimension, size, step)
+
+    def diagonal(self, offset=0, dim1=0, dim2=1):
+        """Return a view of the diagonal spanned by ``dim1`` and ``dim2``.
+
+        ``offset > 0`` moves above the main diagonal and ``offset < 0`` below
+        it.  The two dimensions are replaced by a single trailing diagonal
+        dimension, matching ``torch.diagonal(input, offset, dim1, dim2)``.
+        The view shares storage with ``self`` and is differentiable (backward
+        scatters the gradient onto the selected diagonal).
+        """
+        from wxx import autograd
+
+        return autograd.diagonal(self).forward(self, offset, dim1, dim2)
 
     def chunk(self, chunks, dim=0):
         """Split ``dim`` into ``chunks`` equal parts (differentiable)."""
@@ -611,6 +642,13 @@ class Tensor:
             return autograd.mulscaler(self).forward(self, 1.0 / float(other))
         return autograd.div(self, other).forward(self, other)
 
+    def __rtruediv__(self, other):
+        from wxx import autograd
+
+        if not isinstance(other, numbers.Real):
+            return NotImplemented
+        return autograd.rdivscaler(self).forward(self, float(other))
+
     def __matmul__(self, other):
         from wxx import autograd
 
@@ -622,13 +660,28 @@ class Tensor:
     def __pow__(self, other):
         from wxx import autograd
 
-        if isinstance(other, (int, float)) and other == 2:
+        if isinstance(other, numbers.Real) and other == 2:
             return autograd.square(self).forward(self)
-        if isinstance(other, (int, float)):
+        if isinstance(other, numbers.Real):
             return autograd.powscaler(self).forward(self, float(other))
         raise TypeError(
             f"tensor exponents are not supported, got {type(other).__name__}"
         )
+
+    def __rpow__(self, other):
+        from wxx import autograd
+
+        if not isinstance(other, numbers.Real):
+            return NotImplemented
+        base = float(other)
+        if base <= 0.0:
+            raise ValueError(
+                f"a tensor exponent requires a positive base, got {base}"
+            )
+        return autograd.rpowscaler(self).forward(self, base)
+
+    def pow(self, exponent):
+        return self.__pow__(exponent)
 
     def __eq__(self, other):
         from . import functional
@@ -657,6 +710,11 @@ class Tensor:
         from wxx import autograd
 
         return autograd.sin(self).forward(self)
+
+    def cos(self):
+        from wxx import autograd
+
+        return autograd.cos(self).forward(self)
 
     def sigmoid(self):
         from wxx import autograd
